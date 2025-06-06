@@ -1,9 +1,10 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
 // If you want to use Azure Search, uncomment the following lines
-// var search = builder.ExecutionContext.IsPublishMode
-//     ? builder.AddAzureSearch("search")
-//     : builder.AddConnectionString("search");
+// var existingSearchName = builder.AddParameter("existingSearchName");
+// var existingSearchResourceGroup = builder.AddParameter("existingSearchResourceGroup");
+// var search = builder.AddAzureSearch("search")
+//     .AsExisting(existingSearchName, existingSearchResourceGroup);
 
 var existingOpenAIName = builder.AddParameter("existingOpenAIName");
 var existingOpenAIResourceGroup = builder.AddParameter("existingOpenAIResourceGroup");
