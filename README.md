@@ -2,13 +2,13 @@
 
 This is a demo to showcase how to use the [Semantic Kernel Agent Framework](https://learn.microsoft.com/en-us/semantic-kernel/frameworks/agent/?pivots=programming-language-csharp) with [.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/get-started/aspire-overview).
 
-This sample simulate an agent that based his answer on a knowledge base stored in Azure AI Search and uses Azure OpenAI to generate the answer. The knowledge base is populated via static data and is not retrieved from Azure AI Search. Nonetheless, is easy to adapt the code to retrieve the data from Azure AI Search.
+This sample simulates an agent that bases its answer on a knowledge base stored in Azure AI Search and uses Azure OpenAI to generate the answer. The knowledge base is populated via static data and is not retrieved from Azure AI Search. Nonetheless, it is easy to adapt the code to retrieve the data from Azure AI Search.
 
 ## How to run the example
 
 1. Configure the OpenAI integration for .NET Aspire according to the [documentation](https://learn.microsoft.com/en-us/dotnet/aspire/azureai/azureai-openai-integration?tabs=dotnet-cli#connect-to-an-existing-azure-openai-service). You can also configure the Azure AI Search integration by following the [documentation](https://learn.microsoft.com/en-us/dotnet/aspire/azureai/azureai-search-document-integration?tabs=dotnet-cli).
 
-Note that you can use either DefaultAzureCredentials or API Keys for authentication.
+Note that you can use either DefaultAzureCredential or API key authentication.
 
 You need to add the connection string to your AppHost `appsettings.json` file. The connection string format depends on the authentication method you choose.
 
