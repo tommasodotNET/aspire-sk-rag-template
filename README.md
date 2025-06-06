@@ -8,29 +8,21 @@ This sample simulates an agent that bases its answer on a knowledge base stored 
 
 1. Configure the OpenAI integration for .NET Aspire according to the [documentation](https://learn.microsoft.com/en-us/dotnet/aspire/azureai/azureai-openai-integration?tabs=dotnet-cli#connect-to-an-existing-azure-openai-service). You can also configure the Azure AI Search integration by following the [documentation](https://learn.microsoft.com/en-us/dotnet/aspire/azureai/azureai-search-document-integration?tabs=dotnet-cli).
 
-Note that you can use either DefaultAzureCredential or API key authentication.
+This template uses [.NET Aspire Azure integrations](https://learn.microsoft.com/en-us/dotnet/aspire/azure/integrations-overview?tabs=dotnet-cli#use-existing-azure-resources).
 
-You need to add the connection string to your AppHost `appsettings.json` file. The connection string format depends on the authentication method you choose.
-
-Using DefaultAzureCredentials:
+You need to configure your Azure environment in AppHost `appsettings.json` file.
 
 ```json
-{
- "ConnectionStrings": {
-    "search": "Endpoint=https://<SEARCH_NAME>.search.windows.net/",
-    "azureOpenAI": "Endpoint=https://<AZ_OAI_NAME>.openai.azure.com/"
-  }
-}
-```
-
-Using API Keys:
-
-```json
-{
- "ConnectionStrings": {
-    "search": "Endpoint=https://<SEARCH_NAME>.search.windows.net;Key=<SEARCH_KEY>;",
-    "azureOpenAI": "Endpoint=https://<AZ_OAI_NAME>.openai.azure.com/;Key=<AZ_OAI_KEY>;"
-  }
+"Azure": {
+  "SubscriptionId": "<YOUR_SUBSCRIPTION_ID>",
+  "AllowResourceGroupCreation": true,
+  "ResourceGroup": "<YOUR_RESOURCE_GROUP_NAME>",
+  "Location": "<YOUR_LOCATION>",
+  "CredentialSource": "<YOUR_CREDENTIAL_SOURCE>" // Options: "AzureCli", "AzurePowerShell", "VisualStudio", "AzureDeveloperCli", "InteractiveBrowser"
+},
+"Parameters": {
+  "existingOpenAIName": "<EXISTING_AZ_OAI_NAME>",
+  "existingOpenAIResourceGroup": "<EXISTING_RESOURCE_GROUP_NAME>"
 }
 ```
 

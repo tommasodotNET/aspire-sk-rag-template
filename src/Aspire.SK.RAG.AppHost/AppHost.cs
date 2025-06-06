@@ -1,21 +1,24 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
+// If you want to use Azure Search, uncomment the following lines
 // var search = builder.ExecutionContext.IsPublishMode
 //     ? builder.AddAzureSearch("search")
 //     : builder.AddConnectionString("search");
 
-var azureOpenAI = builder.ExecutionContext.IsPublishMode
-    ? builder.AddAzureOpenAI("azureOpenAI").AddDeployment(
-        name: "gpt-4o",
-        modelName: "gpt-4o",
-        modelVersion: "2024-11-20")
-    : builder.AddConnectionString("azureOpenAI");
+var existingOpenAIName = builder.AddParameter("existingOpenAIName");
+var existingOpenAIResourceGroup = builder.AddParameter("existingOpenAIResourceGroup");
+
+var azureOpenAI = builder.AddAzureOpenAI("azureOpenAI");
+        
+// If you want to use an existing Azure OpenAI resource, uncomment the following line
+azureOpenAI.AsExisting(existingOpenAIName, existingOpenAIResourceGroup);
 
 var apiService = builder.AddProject<Projects.Aspire_SK_RAG_ApiService>("apiservice")
     .WithHttpHealthCheck("/health")
     .WithReference(azureOpenAI)
     .WaitFor(azureOpenAI);
 
+// If you want to use Azure Search, uncomment the following lines
 // apiService
 //     .WithReference(search)
 //     .WaitFor(search);
