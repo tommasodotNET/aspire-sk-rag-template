@@ -13,7 +13,7 @@ AppContext.SetSwitch("Microsoft.SemanticKernel.Experimental.GenAI.EnableOTelDiag
 builder.AddServiceDefaults();
 
 builder.AddAzureOpenAIClient("azureOpenAI");
-builder.AddAzureSearchClient("search");
+// builder.AddAzureSearchClient("search");
 
 builder.Services.AddOpenApi();
 

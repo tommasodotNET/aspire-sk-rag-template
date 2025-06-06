@@ -1,8 +1,8 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
-var search = builder.ExecutionContext.IsPublishMode
-    ? builder.AddAzureSearch("search")
-    : builder.AddConnectionString("search");
+// var search = builder.ExecutionContext.IsPublishMode
+//     ? builder.AddAzureSearch("search")
+//     : builder.AddConnectionString("search");
 
 var azureOpenAI = builder.ExecutionContext.IsPublishMode
     ? builder.AddAzureOpenAI("azureOpenAI").AddDeployment(
@@ -13,10 +13,12 @@ var azureOpenAI = builder.ExecutionContext.IsPublishMode
 
 var apiService = builder.AddProject<Projects.Aspire_SK_RAG_ApiService>("apiservice")
     .WithHttpHealthCheck("/health")
-    .WithReference(search)
     .WithReference(azureOpenAI)
-    .WaitFor(search)
     .WaitFor(azureOpenAI);
+
+// apiService
+//     .WithReference(search)
+//     .WaitFor(search);
 
 var frontend = builder.AddNpmApp("frontend", "../frontend", "dev")
     .WithNpmPackageInstallation()

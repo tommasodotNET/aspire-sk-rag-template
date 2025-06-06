@@ -7,12 +7,12 @@ namespace Aspire.SK.RAG.ApiService.Plugins;
 [Description("Set of plugins to search your documents.")]
 public class RAGPlugin
 {
-    private SearchIndexClient _searchIndexClient;
+    // private SearchIndexClient _searchIndexClient;
 
-    public RAGPlugin(SearchIndexClient searchIndexClient)
-    {
-        _searchIndexClient = searchIndexClient;
-    }
+    // public RAGPlugin(SearchIndexClient searchIndexClient)
+    // {
+    //     _searchIndexClient = searchIndexClient;
+    // }
 
     [KernelFunction("search")]
     [Description("Search for relevant documents in the RAG index.")]
