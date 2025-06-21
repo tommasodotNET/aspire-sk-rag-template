@@ -1,6 +1,9 @@
 using System.Text.Json;
 using Aspire.SK.RAG.ApiService.Plugins;
+using Aspire.SK.RAG.ApiService.Services;
 using Aspire.SK.RAG.Models;
+using Azure.Identity;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.Agents;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -14,6 +17,8 @@ builder.AddServiceDefaults();
 
 builder.AddAzureOpenAIClient("azureOpenAI");
 // builder.AddAzureSearchClient("search");
+builder.AddKeyedAzureCosmosContainer("conversations");
+builder.Services.AddSingleton<IConversationRepository, CosmosConversationRepository>();
 
 builder.Services.AddOpenApi();
 
@@ -47,23 +52,44 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.MapPost("/agent/chat/stream", async (ChatCompletionAgent agent, HttpResponse response, AIChatRequest request) =>
+app.MapPost("/agent/chat/stream", async (
+    [FromServices] ChatCompletionAgent agent,
+    [FromServices]IConversationRepository? conversationRepository,
+    [FromServices]ILogger<Program> logger,
+    HttpResponse response,
+    [FromBody]AIChatRequest request) =>
 {
-    var history = new ChatHistory();
-    foreach(var message in request.Messages)
+    //retrieve the conversation thread based on the session state
+    AgentThread thread = await agent.GetThread(request.SessionState, conversationRepository, logger);
+
+    if (request.Messages.Count == 0)
     {
-        var role = message.Role == AIChatRole.Assistant ? AuthorRole.Assistant : AuthorRole.User;
-        history.Add(new ChatMessageContent(role, message.Content));
+        logger.LogInformation("First message from user, sending greeting.");
+
+        AIChatCompletionDelta delta = new(
+            new AIChatMessageDelta() { Content = $"Hi, I'm {agent.Name}" }
+        )
+        {
+            SessionState = thread.Id
+        };
+
+        await response.WriteAsync($"{JsonSerializer.Serialize(delta)}\r\n");
+        await response.Body.FlushAsync();
+        return;
     }
+
+    var lastMessage = request.Messages[^1];
 
     var agentThread = new ChatHistoryAgentThread();
 
     response.Headers.Append("Content-Type", "application/jsonl");
-    await foreach(var delta in agent.InvokeStreamingAsync(history, agentThread))
+    await foreach (var delta in agent.InvokeStreamingAsync(new ChatMessageContent(AuthorRole.User, lastMessage.Content), thread))
     {
         await response.WriteAsync($"{JsonSerializer.Serialize(new AIChatCompletionDelta(new AIChatMessageDelta() { Content = delta.Message.Content }))}\r\n");
         await response.Body.FlushAsync();
     }
+    
+    await agent.SaveThread(thread, conversationRepository, logger);
 })
 .WithName("ChatStreamAgent");
 

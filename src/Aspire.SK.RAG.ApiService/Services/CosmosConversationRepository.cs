@@ -1,0 +1,226 @@
+using System;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Aspire.SK.RAG.ApiService.Models;
+using Microsoft.Azure.Cosmos;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
+using Newtonsoft.Json.Linq;
+
+namespace Aspire.SK.RAG.ApiService.Services;
+
+public interface IConversationRepository
+{
+    Task<Conversation> LoadAsync(string? conversationId = null, CancellationToken cancellationToken = default);
+    Task DeleteConversationAsync(string conversationId, CancellationToken cancellationToken = default);
+    Task SaveAsync(Conversation conversation, CancellationToken cancellationToken = default);
+}
+
+public class CosmosConversationRepository : IConversationRepository
+{
+    private readonly Container _cosmosContainer;
+    private readonly ChatHistorySummarizationReducer _chatHistorySummarizationReducer;
+    private readonly ILogger<CosmosConversationRepository> _logger;
+
+    public CosmosConversationRepository([FromKeyedServices("conversations")] Container cosmosContainer, Kernel kernel, ILogger<CosmosConversationRepository> logger)
+    {
+        _cosmosContainer = cosmosContainer ?? throw new ArgumentNullException(nameof(cosmosContainer));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+        var chatCompletionService = kernel.Services.GetRequiredService<IChatCompletionService>() ??
+            throw new ArgumentNullException(nameof(kernel), "ChatCompletionService is required but not found in the kernel.");
+        _chatHistorySummarizationReducer = new ChatHistorySummarizationReducer(chatCompletionService, 5, 10);
+    }
+
+    public async Task DeleteConversationAsync(string conversationId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(conversationId))
+        {
+            throw new ArgumentException("Conversation ID cannot be null or empty.", nameof(conversationId));
+        }
+
+        List<JObject> docs = await ExecuteQueryAsync(conversationId, cancellationToken).ConfigureAwait(false);
+
+        if (docs.Count == 0)
+        {
+            _logger.LogInformation("No documents found for conversationId {conversationId}", conversationId);
+            return;
+        }
+
+        foreach (var doc in docs)
+        {
+            if (doc.TryGetValue("id", out var idNode) && idNode is JToken idValue)
+            {
+                var id = idValue.ToString();
+                try
+                {
+                    await _cosmosContainer.DeleteItemAsync<JsonObject>(id, new PartitionKey(conversationId), cancellationToken: cancellationToken).ConfigureAwait(false);
+                }
+                catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    _logger.LogWarning("Document with id {id} not found for deletion.", id);
+                }
+            }
+        }
+    }
+
+    public async Task<Conversation> LoadAsync(string? conversationId = null, CancellationToken cancellationToken = default)
+    {
+        Conversation output = new() { Id = conversationId ?? string.Empty };
+
+        if (string.IsNullOrEmpty(conversationId))
+        {
+            return output;
+        }
+
+        List<JObject> queryResults = await ExecuteQueryAsync(conversationId, cancellationToken).ConfigureAwait(false);
+
+        if (queryResults.Count == 0)
+        {
+            _logger.LogInformation("No documents found for conversationId {conversationId}", conversationId);
+            return output;
+        }
+
+        List<ConversationMessage> messages = [];
+        foreach (var item in queryResults)
+        {
+            if (item != null && Enum.TryParse(item?[BaseConversationItem.ItemTypeKey]?.ToString(), out ConversationItemType type))
+            {
+                if (type == ConversationItemType.Header)
+                {
+                    ConversationHeader? header = JsonSerializer.Deserialize<ConversationHeader>(item.ToString()!);
+                    output.Properties = header?.Properties ?? [];
+                }
+                else if (type == ConversationItemType.Message)
+                {
+                    var m = JsonSerializer.Deserialize<ConversationMessage>(item.ToString());
+                    if (m != null)
+                    {
+                        messages.Add(m);
+                    }
+                }
+            }
+        }
+
+        _logger.LogInformation("Loaded conversation {conversationId} with {messageCount} messages",
+            conversationId, output.Messages.Count);
+
+        messages = messages.OrderBy(m => m.MessageIndex).ToList();
+
+        output.Id = conversationId;
+
+        if (messages.Count > 0)
+        {
+            foreach (var message in messages)
+            {
+                var roleEnum = message.Role?.ToLowerInvariant() switch
+                {
+                    "user" => AuthorRole.User,
+                    "assistant" => AuthorRole.Assistant,
+                    "system" => AuthorRole.System,
+                    "tool" => AuthorRole.Tool,
+                    _ => AuthorRole.User
+                };
+                var content = new ChatMessageContent(
+                        role: roleEnum,
+                        content: message.Content
+                );
+                output.Messages.Add(content);
+            }
+        }
+        return output;
+    }
+
+    public async Task SaveAsync(Conversation conversation, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(conversation);
+        if (string.IsNullOrEmpty(conversation.Id))
+        {
+            throw new ArgumentException("Conversation ID cannot be null or empty.", nameof(conversation));
+        }
+
+        _logger.LogInformation("Saving conversation {conversationId} with {messageCount} messages",
+            conversation.Id, conversation.Messages.Count);
+
+        PartitionKey partitionKey = new(conversation.Id);
+        TransactionalBatch batch = _cosmosContainer.CreateTransactionalBatch(partitionKey);
+
+        var messagesToBeSaved = await SelectMessagesToSaveAsync(conversation, cancellationToken);
+
+        var headerDoc = new
+        {
+            id = conversation.Id,
+            conversationId = conversation.Id,
+            properties = conversation.Properties,
+            itemType = ConversationItemType.Header.ToString(),
+        };
+        batch.UpsertItem(item: headerDoc);
+
+        for (int i = 0; i < messagesToBeSaved.Count; i++)
+        {
+            var message = messagesToBeSaved[i];
+
+            var messageDocument = new
+            {
+                id = Guid.NewGuid().ToString(),
+                conversationId = conversation.Id,
+                messageIndex = i,
+                role = message.Role.ToString(),
+                content = message.Content ?? string.Empty,
+                timestamp = DateTime.UtcNow.ToString("o"),
+                isSummary = i == 0 && conversation.IsSummary,
+                itemType = ConversationItemType.Message.ToString()
+            };
+
+            batch.UpsertItem(item: messageDocument);
+
+        }
+
+        var batchResponse = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+        if (!batchResponse.IsSuccessStatusCode)
+        {
+            _logger.LogError("Error in SaveAsync, batchResponse: {batchResponse}", batchResponse);
+        }
+    }
+
+    private async Task<List<ChatMessageContent>> SelectMessagesToSaveAsync(Conversation conversation, CancellationToken cancellationToken)
+    {
+        var actualMessages = conversation.Messages.Where(m => (m.Role == AuthorRole.Assistant || m.Role == AuthorRole.User) && m.Content != string.Empty).ToList();
+        var messagesToBeSaved = new List<ChatMessageContent>();
+        
+        var reducedConversation = await _chatHistorySummarizationReducer.ReduceAsync(actualMessages, cancellationToken);
+
+        if (reducedConversation is not null)
+        {
+            await DeleteConversationAsync(conversation.Id, cancellationToken);
+
+            messagesToBeSaved.AddRange(reducedConversation);
+
+            conversation.IsSummary = true;
+        }
+        else
+        {
+            var newMessages = actualMessages.Skip(actualMessages.Count - 2).ToList();
+            messagesToBeSaved.AddRange(newMessages);
+        }
+
+        return messagesToBeSaved;
+    }
+
+    private async Task<List<JObject>> ExecuteQueryAsync(string conversationId, CancellationToken cancellationToken)
+    {
+        QueryDefinition query = new("SELECT * FROM c");
+        FeedIterator<JObject> results = _cosmosContainer.GetItemQueryIterator<JObject>(
+            query,
+            requestOptions: new QueryRequestOptions { PartitionKey = new(conversationId) }
+        );
+
+        List<JObject> queryResults = [];
+        while (results.HasMoreResults)
+        {
+            FeedResponse<JObject> response = await results.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+            queryResults.AddRange(response);
+        }
+        return queryResults;
+    }
+}

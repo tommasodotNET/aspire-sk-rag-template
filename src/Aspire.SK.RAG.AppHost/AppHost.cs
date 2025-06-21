@@ -14,10 +14,21 @@ var azureOpenAI = builder.AddAzureOpenAI("azureOpenAI");
 // If you want to use an existing Azure OpenAI resource, uncomment the following line
 azureOpenAI.AsExisting(existingOpenAIName, existingOpenAIResourceGroup);
 
+var cosmos = builder.AddAzureCosmosDB("cosmos-db")
+    .RunAsEmulator(
+        emulator =>
+        {
+            emulator.WithLifetime(ContainerLifetime.Persistent);
+        });
+var db = cosmos.AddCosmosDatabase("db");
+var conversations = db.AddContainer("conversations", "/conversationId");
+
 var apiService = builder.AddProject<Projects.Aspire_SK_RAG_ApiService>("apiservice")
     .WithHttpHealthCheck("/health")
     .WithReference(azureOpenAI)
-    .WaitFor(azureOpenAI);
+    .WithReference(conversations)
+    .WaitFor(azureOpenAI)
+    .WaitFor(cosmos);
 
 // If you want to use Azure Search, uncomment the following lines
 // apiService

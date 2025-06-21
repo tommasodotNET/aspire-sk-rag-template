@@ -8,7 +8,7 @@ namespace Aspire.SK.RAG.Models;
 public record AIChatRequest([property: JsonPropertyName("messages")] IList<AIChatMessage> Messages)
 {
     [JsonInclude, JsonPropertyName("sessionState")]
-    public Guid? SessionState;
+    public string? SessionState;
 
     [JsonInclude, JsonPropertyName("context")]
     public BinaryData? Context;

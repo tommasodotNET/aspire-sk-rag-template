@@ -13,6 +13,7 @@ import TextareaAutosize from "react-textarea-autosize";
 import styles from "./Chat.module.css";
 import gfm from "remark-gfm";
 
+
 type ChatEntry = (AIChatMessage & { dataUrl?: string }) | AIChatError;
 
 function isChatError(entry: unknown): entry is AIChatError {
@@ -45,23 +46,24 @@ function toBase64DataUrl(
     });
 }
 
-// ...existing imports...
-
 export default function Chat({ style }: { style: React.CSSProperties }) {
     const client = new AIChatProtocolClient("/agent/chat/");
 
     const [messages, setMessages] = useState<ChatEntry[]>([]);
     const [input, setInput] = useState<string>("");
     const inputId = useId();
-    const [sessionState, setSessionState] = useState<unknown>(undefined);
+    // Set initial sessionState to undefined
+    const [sessionState, setSessionState] = useState<string | undefined>(undefined);
+    const [initialFetchDone, setInitialFetchDone] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
-
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
-    useEffect(scrollToBottom, [messages]);
+    const initialFetchStarted = useRef(false); // <--- aggiungi questa ref
 
     useEffect(() => {
+        // Evita chiamate multiple quando sessionState è undefined
+        if (sessionState !== undefined || initialFetchDone || initialFetchStarted.current) return;
+
+        initialFetchStarted.current = true; // <--- segna che la fetch è partita
+
         const fetchInitialData = async () => {
             try {
                 const result = await client.getStreamedCompletion([], {
@@ -69,7 +71,7 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
                 });
                 const latestMessage: AIChatMessage = { content: "", role: "assistant" };
                 for await (const response of result) {
-                    if (response.sessionState) {
+                    if (response.sessionState && response.sessionState !== sessionState) {
                         setSessionState(response.sessionState);
                     }
                     if (!response.delta) {
@@ -87,11 +89,26 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
                 if (isChatError(e)) {
                     setMessages([{ code: e.code, message: e.message }]);
                 }
+            } finally {
+                setInitialFetchDone(true);
             }
         };
 
         fetchInitialData();
-    }, []); // Empty dependency array ensures this runs only once on mount
+    }, [sessionState, initialFetchDone]); // Dipendenze corrette
+
+    // Quando resetti la conversazione, consenti una nuova fetch iniziale
+    const handleResetConversation = () => {
+        setSessionState(undefined);
+        setMessages([]);
+        setInitialFetchDone(false);
+        initialFetchStarted.current = false; // <--- resetta la ref
+    };
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+    useEffect(scrollToBottom, [messages]);
 
     const sendMessage = async () => {
         const message: AIChatMessage = {
@@ -159,6 +176,19 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
 
     return (
         <div className={styles.chatWindow} style={style}>
+            {/* Header with sessionState and reset button */}
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
+                <label style={{ marginRight: 8 }}>Session State:</label>
+                <input
+                    type="text"
+                    value={sessionState}
+                    readOnly
+                    style={{ width: 280, marginRight: 12 }}
+                />
+                <Button onClick={handleResetConversation} appearance="secondary">
+                    Reset Conversation
+                </Button>
+            </div>
             <div className={styles.messages}>
                 {messages.map((message) => (
                     <div key={crypto.randomUUID()} className={getClassName(message)}>
