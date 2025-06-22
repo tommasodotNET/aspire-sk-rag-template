@@ -162,7 +162,7 @@ public class CosmosConversationRepository : IConversationRepository
 
             var messageDocument = new
             {
-                id = Guid.NewGuid().ToString(),
+                id = $"{conversation.Id}-message-{i:D6}",
                 conversationId = conversation.Id,
                 messageIndex = i,
                 role = message.Role.ToString(),
@@ -200,8 +200,7 @@ public class CosmosConversationRepository : IConversationRepository
         }
         else
         {
-            var newMessages = actualMessages.Skip(actualMessages.Count - 2).ToList();
-            messagesToBeSaved.AddRange(newMessages);
+            messagesToBeSaved.AddRange(actualMessages);
         }
 
         return messagesToBeSaved;
