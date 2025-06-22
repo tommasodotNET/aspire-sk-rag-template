@@ -50,12 +50,11 @@ public static class ThreadUtilityExtensions
         this Agent agent,
         AgentThread? thread,
         IConversationRepository? conversationRepository,
+        IChatHistoryReducer? reducer,
         ILogger logger,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(agent);
-
-        logger.LogInformation("Saving thread with ID: {ThreadId}", thread?.Id ?? "null");
 
         logger.LogInformation("Saving ChatHistoryAgentThread with ID: {ThreadId}", thread.Id);
 
@@ -65,6 +64,25 @@ public static class ThreadUtilityExtensions
         }
 
         var chatHistoryThread = thread as ChatHistoryAgentThread;
+        var historyToBeSaved = new ChatHistory();
+        if (reducer != null)
+        {
+            logger.LogInformation("Ecaluate reducing conversation for thread ID: {ThreadId}", chatHistoryThread.Id);
+            //se è stato passato un reducer, lo utilizzo per eventualmente ridurre la conversazione prima di salvarla
+            var reducedConversation = await reducer.ReduceAsync(chatHistoryThread.ChatHistory, cancellationToken);
+            if (reducedConversation is not null)
+            {
+                logger.LogInformation("Reduced conversation for thread ID: {ThreadId}", chatHistoryThread.Id);
+                await conversationRepository.DeleteConversationAsync(chatHistoryThread.Id, cancellationToken);
+
+                historyToBeSaved.AddRange(reducedConversation);
+            }
+            else
+            {
+                logger.LogInformation("No reduction applied for thread ID: {ThreadId}", chatHistoryThread.Id);
+                historyToBeSaved.AddRange(chatHistoryThread.ChatHistory);
+            }
+        }
 
         logger.LogInformation("Saving conversation for thread ID: {ThreadId}", chatHistoryThread.Id);
 
@@ -72,7 +90,7 @@ public static class ThreadUtilityExtensions
         var conversation = new Conversation
         {
             Id = chatHistoryThread.Id,
-            Messages = chatHistoryThread.ChatHistory
+            Messages = historyToBeSaved
         };
 
         await conversationRepository.SaveAsync(conversation);

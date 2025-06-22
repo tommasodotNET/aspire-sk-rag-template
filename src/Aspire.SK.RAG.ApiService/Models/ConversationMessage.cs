@@ -42,17 +42,8 @@ public class ConversationMessage : BaseConversationItem
     [JsonPropertyName("messageIndex")]
     public int MessageIndex { get; set; }
 
-    /// <summary>
-    /// The role of the message author (User, Assistant, System, etc.)
-    /// </summary>
-    [JsonPropertyName("role")]
-    public string Role { get; set; } = string.Empty;
-
-    /// <summary>
-    /// The message content
-    /// </summary>
-    [JsonPropertyName("content")]
-    public string Content { get; set; } = string.Empty;
+    [JsonPropertyName("chatMessageContent")]
+    public string ChatMessageContent { get; set; } = string.Empty;
 
     /// <summary>
     /// Timestamp when the message was created/saved

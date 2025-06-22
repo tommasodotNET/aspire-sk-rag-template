@@ -19,17 +19,12 @@ public interface IConversationRepository
 public class CosmosConversationRepository : IConversationRepository
 {
     private readonly Container _cosmosContainer;
-    private readonly ChatHistorySummarizationReducer _chatHistorySummarizationReducer;
     private readonly ILogger<CosmosConversationRepository> _logger;
 
-    public CosmosConversationRepository([FromKeyedServices("conversations")] Container cosmosContainer, Kernel kernel, ILogger<CosmosConversationRepository> logger)
+    public CosmosConversationRepository([FromKeyedServices("conversations")] Container cosmosContainer, ILogger<CosmosConversationRepository> logger)
     {
         _cosmosContainer = cosmosContainer ?? throw new ArgumentNullException(nameof(cosmosContainer));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-
-        var chatCompletionService = kernel.Services.GetRequiredService<IChatCompletionService>() ??
-            throw new ArgumentNullException(nameof(kernel), "ChatCompletionService is required but not found in the kernel.");
-        _chatHistorySummarizationReducer = new ChatHistorySummarizationReducer(chatCompletionService, 5, 10);
     }
 
     public async Task DeleteConversationAsync(string conversationId, CancellationToken cancellationToken = default)
@@ -113,18 +108,7 @@ public class CosmosConversationRepository : IConversationRepository
         {
             foreach (var message in messages)
             {
-                var roleEnum = message.Role?.ToLowerInvariant() switch
-                {
-                    "user" => AuthorRole.User,
-                    "assistant" => AuthorRole.Assistant,
-                    "system" => AuthorRole.System,
-                    "tool" => AuthorRole.Tool,
-                    _ => AuthorRole.User
-                };
-                var content = new ChatMessageContent(
-                        role: roleEnum,
-                        content: message.Content
-                );
+                var content = JsonSerializer.Deserialize<ChatMessageContent>(message.ChatMessageContent);
                 output.Messages.Add(content);
             }
         }
@@ -145,8 +129,6 @@ public class CosmosConversationRepository : IConversationRepository
         PartitionKey partitionKey = new(conversation.Id);
         TransactionalBatch batch = _cosmosContainer.CreateTransactionalBatch(partitionKey);
 
-        var messagesToBeSaved = await SelectMessagesToSaveAsync(conversation, cancellationToken);
-
         var headerDoc = new
         {
             id = conversation.Id,
@@ -156,24 +138,22 @@ public class CosmosConversationRepository : IConversationRepository
         };
         batch.UpsertItem(item: headerDoc);
 
-        for (int i = 0; i < messagesToBeSaved.Count; i++)
+        for (int i = 0; i < conversation.Messages.Count; i++)
         {
-            var message = messagesToBeSaved[i];
+            var message = conversation.Messages[i];
 
             var messageDocument = new
             {
                 id = $"{conversation.Id}-message-{i:D6}",
                 conversationId = conversation.Id,
                 messageIndex = i,
-                role = message.Role.ToString(),
-                content = message.Content ?? string.Empty,
+                chatMessageContent = JsonSerializer.Serialize(message),
                 timestamp = DateTime.UtcNow.ToString("o"),
                 isSummary = i == 0 && conversation.IsSummary,
                 itemType = ConversationItemType.Message.ToString()
             };
 
             batch.UpsertItem(item: messageDocument);
-
         }
 
         var batchResponse = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
@@ -181,29 +161,6 @@ public class CosmosConversationRepository : IConversationRepository
         {
             _logger.LogError("Error in SaveAsync, batchResponse: {batchResponse}", batchResponse);
         }
-    }
-
-    private async Task<List<ChatMessageContent>> SelectMessagesToSaveAsync(Conversation conversation, CancellationToken cancellationToken)
-    {
-        var actualMessages = conversation.Messages.Where(m => (m.Role == AuthorRole.Assistant || m.Role == AuthorRole.User) && m.Content != string.Empty).ToList();
-        var messagesToBeSaved = new List<ChatMessageContent>();
-        
-        var reducedConversation = await _chatHistorySummarizationReducer.ReduceAsync(actualMessages, cancellationToken);
-
-        if (reducedConversation is not null)
-        {
-            await DeleteConversationAsync(conversation.Id, cancellationToken);
-
-            messagesToBeSaved.AddRange(reducedConversation);
-
-            conversation.IsSummary = true;
-        }
-        else
-        {
-            messagesToBeSaved.AddRange(actualMessages);
-        }
-
-        return messagesToBeSaved;
     }
 
     private async Task<List<JObject>> ExecuteQueryAsync(string conversationId, CancellationToken cancellationToken)

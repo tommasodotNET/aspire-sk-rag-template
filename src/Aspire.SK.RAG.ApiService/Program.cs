@@ -25,7 +25,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddSingleton<RAGPlugin>();
 builder.Services.AddKernel().AddAzureOpenAIChatCompletion("gpt-4o");
 
-builder.Services.AddSingleton(builder => 
+builder.Services.AddSingleton(builder =>
 {
     var _settings = new OpenAIPromptExecutionSettings()
     {
@@ -45,6 +45,14 @@ builder.Services.AddSingleton(builder =>
     return agent;
 });
 
+builder.Services.AddSingleton<IChatHistoryReducer>(provider =>
+{
+    var kernel = provider.GetRequiredService<Kernel>();
+    var chatCompletion = kernel.Services.GetRequiredService<IChatCompletionService>();
+
+    return new ChatHistorySummarizationReducer(chatCompletion, 1, 5);
+});
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -55,7 +63,8 @@ if (app.Environment.IsDevelopment())
 app.MapPost("/agent/chat/stream", async (
     [FromServices] ChatCompletionAgent agent,
     [FromServices]IConversationRepository? conversationRepository,
-    [FromServices]ILogger<Program> logger,
+    [FromServices]IChatHistoryReducer? chatHistoryReducer,
+    [FromServices] ILogger<Program> logger,
     HttpResponse response,
     [FromBody]AIChatRequest request) =>
 {
@@ -78,7 +87,7 @@ app.MapPost("/agent/chat/stream", async (
         return;
     }
 
-    var lastMessage = request.Messages[^1];
+    var lastMessage = request.Messages.LastOrDefault();
 
     var agentThread = new ChatHistoryAgentThread();
 
@@ -89,7 +98,7 @@ app.MapPost("/agent/chat/stream", async (
         await response.Body.FlushAsync();
     }
     
-    await agent.SaveThread(thread, conversationRepository, logger);
+    await agent.SaveThread(thread, conversationRepository, chatHistoryReducer, logger);
 })
 .WithName("ChatStreamAgent");
 
