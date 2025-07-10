@@ -15,7 +15,7 @@ public class RAGPlugin
     // }
 
     [KernelFunction("search_by_name")]
-    [Description("Search for Orders by Buyer Name or Order ID")]
+    [Description("Search for Orders by Buyer Name")]
     public string SearchByName([Description("Buyer")] string name)
     {
         var orders = new[]

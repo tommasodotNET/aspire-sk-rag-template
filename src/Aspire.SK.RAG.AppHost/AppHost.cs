@@ -14,10 +14,12 @@ var azureOpenAI = builder.AddAzureOpenAI("azureOpenAI");
 // If you want to use an existing Azure OpenAI resource, uncomment the following line
 azureOpenAI.AsExisting(existingOpenAIName, existingOpenAIResourceGroup);
 
+#pragma warning disable ASPIRECOSMOSDB001
 var cosmos = builder.AddAzureCosmosDB("cosmos-db")
-    .RunAsEmulator(
+    .RunAsPreviewEmulator(
         emulator =>
         {
+            emulator.WithDataExplorer();
             emulator.WithLifetime(ContainerLifetime.Persistent);
         });
 var db = cosmos.AddCosmosDatabase("db");

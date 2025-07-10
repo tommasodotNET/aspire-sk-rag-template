@@ -1,11 +1,8 @@
-using System;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Aspire.SK.RAG.ApiService.Models;
 using Microsoft.Azure.Cosmos;
 using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.ChatCompletion;
-using Newtonsoft.Json.Linq;
 
 namespace Aspire.SK.RAG.ApiService.Services;
 
@@ -21,12 +18,15 @@ public class CosmosConversationRepository : IConversationRepository
     private readonly Container _cosmosContainer;
     private readonly ILogger<CosmosConversationRepository> _logger;
 
-    public CosmosConversationRepository([FromKeyedServices("conversations")] Container cosmosContainer, ILogger<CosmosConversationRepository> logger)
+    public CosmosConversationRepository([FromKeyedServices("conversations")] Container cosmosContainer,
+        ILogger<CosmosConversationRepository> logger)
     {
         _cosmosContainer = cosmosContainer ?? throw new ArgumentNullException(nameof(cosmosContainer));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
+
+    //TODO: sostituire con il metodo DeleteAllItemsByPartitionKeyStreamAsync appena disponibile in Cosmos SDK non beta 
     public async Task DeleteConversationAsync(string conversationId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(conversationId))
@@ -34,28 +34,98 @@ public class CosmosConversationRepository : IConversationRepository
             throw new ArgumentException("Conversation ID cannot be null or empty.", nameof(conversationId));
         }
 
-        List<JObject> docs = await ExecuteQueryAsync(conversationId, cancellationToken).ConfigureAwait(false);
+        _logger.LogDebug("Deleting conversation with ID: {conversationId}", conversationId);
 
-        if (docs.Count == 0)
-        {
-            _logger.LogInformation("No documents found for conversationId {conversationId}", conversationId);
-            return;
-        }
+        var partitionKey = new PartitionKey(conversationId);
+        var query = new QueryDefinition("SELECT c.id, c.conversationId FROM c");
 
-        foreach (var doc in docs)
-        {
-            if (doc.TryGetValue("id", out var idNode) && idNode is JToken idValue)
+        using var iterator = _cosmosContainer.GetItemQueryIterator<ConversationMessage>(
+            query,
+            requestOptions: new QueryRequestOptions
             {
-                var id = idValue.ToString();
+                PartitionKey = partitionKey,
+                MaxItemCount = 100 // Process in batches
+            });
+
+        var deletedCount = 0;
+  
+        while (iterator.HasMoreResults)
+        {
+            var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+
+            foreach (var msg in response)
+            {
                 try
                 {
-                    await _cosmosContainer.DeleteItemAsync<JsonObject>(id, new PartitionKey(conversationId), cancellationToken: cancellationToken).ConfigureAwait(false);
+                    await _cosmosContainer.DeleteItemAsync<object>(
+                        msg.Id,
+                        partitionKey,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                    deletedCount++;
                 }
                 catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
-                    _logger.LogWarning("Document with id {id} not found for deletion.", id);
+                    _logger.LogWarning("Document with id {id} not found for deletion in conversation {conversationId}", msg.Id, conversationId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogCritical(ex, "Error deleting document {id} from conversation {conversationId}", msg.Id, conversationId);
                 }
             }
+        }
+
+        if (deletedCount == 0)
+        {
+            _logger.LogDebug("No documents found for conversationId {conversationId}", conversationId);
+        }
+        else
+        {
+            _logger.LogDebug("Deleted {deletedCount} documents for conversationId {conversationId}", deletedCount, conversationId);
+        }
+
+    }
+
+    public async Task<long> GetLastMessageTsAsync(string? conversationId = null, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(conversationId))
+        {
+            return 0;
+        }
+
+        _logger.LogDebug("Retrieving last message timestamp for conversationId {conversationId}", conversationId);
+
+        try
+        {
+            // Use direct iterator instead of ExecuteQueryAsync for better performance
+            var query = new QueryDefinition("SELECT VALUE c._ts FROM c ORDER BY c._ts DESC OFFSET 0 LIMIT 1");
+
+            using var iterator = _cosmosContainer.GetItemQueryIterator<long>(
+                query,
+                requestOptions: new QueryRequestOptions
+                {
+                    PartitionKey = new(conversationId),
+                    MaxItemCount = 1 // Optimize for single result
+                });
+
+            if (iterator.HasMoreResults)
+            {
+                var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+                return response.FirstOrDefault();
+            }
+
+            _logger.LogDebug("No documents found for conversationId {conversationId}", conversationId);
+            return 0;
+        }
+        catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _logger.LogDebug("Conversation {conversationId} not found", conversationId);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving last message timestamp for conversationId {conversationId}", conversationId);
+            throw;
         }
     }
 
@@ -68,53 +138,32 @@ public class CosmosConversationRepository : IConversationRepository
             return output;
         }
 
-        List<JObject> queryResults = await ExecuteQueryAsync(conversationId, cancellationToken).ConfigureAwait(false);
+        //la query gia ci torna i messaggi ordinati per messageIndex ed evitiamo di farlo in memoria
+        var query = new QueryDefinition("SELECT * FROM c ORDER BY c.messageIndex ASC");
 
-        if (queryResults.Count == 0)
+        // Stream processing for better memory efficiency
+        await foreach (var message in StreamMessagesAsync(query, conversationId, cancellationToken))
         {
-            _logger.LogInformation("No documents found for conversationId {conversationId}", conversationId);
-            return output;
-        }
-
-        List<ConversationMessage> messages = [];
-        foreach (var item in queryResults)
-        {
-            if (item != null && Enum.TryParse(item?[BaseConversationItem.ItemTypeKey]?.ToString(), out ConversationItemType type))
-            {
-                if (type == ConversationItemType.Header)
-                {
-                    ConversationHeader? header = JsonSerializer.Deserialize<ConversationHeader>(item.ToString()!);
-                    output.Properties = header?.Properties ?? [];
-                }
-                else if (type == ConversationItemType.Message)
-                {
-                    var m = JsonSerializer.Deserialize<ConversationMessage>(item.ToString());
-                    if (m != null)
-                    {
-                        messages.Add(m);
-                    }
-                }
-            }
-        }
-
-        _logger.LogInformation("Loaded conversation {conversationId} with {messageCount} messages",
-            conversationId, output.Messages.Count);
-
-        messages = messages.OrderBy(m => m.MessageIndex).ToList();
-
-        output.Id = conversationId;
-
-        if (messages.Count > 0)
-        {
-            foreach (var message in messages)
+            try
             {
                 var content = JsonSerializer.Deserialize<ChatMessageContent>(message.ChatMessageContent);
-                output.Messages.Add(content);
+                if (content != null)
+                {
+                    output.Messages.Add(content);
+                }
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Failed to deserialize message content for conversationId {conversationId}", conversationId);
             }
         }
+
+        _logger.LogInformation("Loaded conversation {conversationId} with {messageCount} messages", conversationId, output.Messages.Count);
+
         return output;
     }
 
+    //TODO: passare ad approccio con TransactionBatch per migliorare le performance appena disponibile nell'emulatore
     public async Task SaveAsync(Conversation conversation, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(conversation);
@@ -123,60 +172,59 @@ public class CosmosConversationRepository : IConversationRepository
             throw new ArgumentException("Conversation ID cannot be null or empty.", nameof(conversation));
         }
 
-        _logger.LogInformation("Saving conversation {conversationId} with {messageCount} messages",
-            conversation.Id, conversation.Messages.Count);
+        _logger.LogDebug("Saving conversation {conversationId} with {messageCount} messages", conversation.Id, conversation.Messages.Count);
 
-        PartitionKey partitionKey = new(conversation.Id);
-        TransactionalBatch batch = _cosmosContainer.CreateTransactionalBatch(partitionKey);
-
-        var headerDoc = new
+        var requestOptions = new ItemRequestOptions
         {
-            id = conversation.Id,
-            conversationId = conversation.Id,
-            properties = conversation.Properties,
-            itemType = ConversationItemType.Header.ToString(),
+            EnableContentResponseOnWrite = false, // We don't need the response body on write
         };
-        batch.UpsertItem(item: headerDoc);
 
+        var partitionKey = new PartitionKey(conversation.Id);
+
+        // Save each message as a separate document
         for (int i = 0; i < conversation.Messages.Count; i++)
         {
             var message = conversation.Messages[i];
 
-            var messageDocument = new
+            if (message==null)
             {
-                id = $"{conversation.Id}-message-{i:D6}",
-                conversationId = conversation.Id,
-                messageIndex = i,
-                chatMessageContent = JsonSerializer.Serialize(message),
-                timestamp = DateTime.UtcNow.ToString("o"),
-                isSummary = i == 0 && conversation.IsSummary,
-                itemType = ConversationItemType.Message.ToString()
+                continue;
+            }
+
+            var messageDocument = new ConversationMessage()
+            {
+                Id = $"{conversation.Id}-message-{i:D6}",
+                ConversationId = conversation.Id,
+                MessageIndex = i,
+                IsSummary = i==0 && message.Metadata!=null && message.Metadata.ContainsKey("__summary__"),
+                ChatMessageContent = JsonSerializer.Serialize(message),
+                Timestamp = DateTime.UtcNow.ToString("o"),
+                Ttl = 86400
             };
 
-            batch.UpsertItem(item: messageDocument);
-        }
-
-        var batchResponse = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-        if (!batchResponse.IsSuccessStatusCode)
-        {
-            _logger.LogError("Error in SaveAsync, batchResponse: {batchResponse}", batchResponse);
+            await _cosmosContainer.UpsertItemAsync(
+                messageDocument,
+                partitionKey,
+                requestOptions: requestOptions,
+                cancellationToken: cancellationToken);
         }
     }
 
-    private async Task<List<JObject>> ExecuteQueryAsync(string conversationId, CancellationToken cancellationToken)
+    private async IAsyncEnumerable<ConversationMessage> StreamMessagesAsync(QueryDefinition query, string conversationId, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        QueryDefinition query = new("SELECT * FROM c");
-        FeedIterator<JObject> results = _cosmosContainer.GetItemQueryIterator<JObject>(
+        var results = _cosmosContainer.GetItemQueryIterator<ConversationMessage>(
             query,
             requestOptions: new QueryRequestOptions { PartitionKey = new(conversationId) }
         );
 
-        List<JObject> queryResults = [];
         while (results.HasMoreResults)
         {
-            FeedResponse<JObject> response = await results.ReadNextAsync(cancellationToken).ConfigureAwait(false);
-            queryResults.AddRange(response);
+            var response = await results.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var item in response)
+            {
+                yield return item;
+            }
         }
-        return queryResults;
     }
+
 }

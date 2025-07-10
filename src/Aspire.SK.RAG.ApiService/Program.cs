@@ -15,9 +15,13 @@ AppContext.SetSwitch("Microsoft.SemanticKernel.Experimental.GenAI.EnableOTelDiag
 
 builder.AddServiceDefaults();
 
-builder.AddAzureOpenAIClient("azureOpenAI");
+builder.AddAzureOpenAIClient("azureOpenAI", configureSettings: settings =>
+{
+    settings.Credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions(){ TenantId = "16b3c013-d300-468d-ac64-7eda0820b6d3" });
+});
+// builder.AddAzureOpenAIClient("azureOpenAI");
 // builder.AddAzureSearchClient("search");
-builder.AddKeyedAzureCosmosContainer("conversations");
+builder.AddKeyedAzureCosmosContainer("conversations", configureClientOptions: (option) => { option.Serializer = new CosmosSystemTextJsonSerializer(); });
 builder.Services.AddSingleton<IConversationRepository, CosmosConversationRepository>();
 
 builder.Services.AddOpenApi();
