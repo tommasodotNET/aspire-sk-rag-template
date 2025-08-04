@@ -17,10 +17,12 @@ builder.AddServiceDefaults();
 
 builder.AddAzureOpenAIClient("azureOpenAI", configureSettings: settings =>
 {
-    settings.Credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions(){ TenantId = "16b3c013-d300-468d-ac64-7eda0820b6d3" });
+    settings.Credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions(){ TenantId = builder.Configuration.GetValue<string>("TenantId") });
 });
-// builder.AddAzureOpenAIClient("azureOpenAI");
-// builder.AddAzureSearchClient("search");
+// builder.AddAzureSearchClient("search", configureSettings: settings =>
+// {
+//     settings.Credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions(){ TenantId = builder.Configuration.GetValue<string>("TenantId") });
+// });
 builder.AddKeyedAzureCosmosContainer("conversations", configureClientOptions: (option) => { option.Serializer = new CosmosSystemTextJsonSerializer(); });
 builder.Services.AddSingleton<IConversationRepository, CosmosConversationRepository>();
 
@@ -66,11 +68,11 @@ if (app.Environment.IsDevelopment())
 
 app.MapPost("/agent/chat/stream", async (
     [FromServices] ChatCompletionAgent agent,
-    [FromServices]IConversationRepository? conversationRepository,
-    [FromServices]IChatHistoryReducer? chatHistoryReducer,
+    [FromServices] IConversationRepository? conversationRepository,
+    [FromServices] IChatHistoryReducer? chatHistoryReducer,
     [FromServices] ILogger<Program> logger,
     HttpResponse response,
-    [FromBody]AIChatRequest request) =>
+    [FromBody] AIChatRequest request) =>
 {
     //retrieve the conversation thread based on the session state
     AgentThread thread = await agent.GetThread(request.SessionState, conversationRepository, logger);

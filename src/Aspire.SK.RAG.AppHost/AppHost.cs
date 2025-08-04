@@ -6,8 +6,12 @@ var builder = DistributedApplication.CreateBuilder(args);
 // var search = builder.AddAzureSearch("search")
 //     .AsExisting(existingSearchName, existingSearchResourceGroup);
 
-var existingOpenAIName = builder.AddParameter("existingOpenAIName");
-var existingOpenAIResourceGroup = builder.AddParameter("existingOpenAIResourceGroup");
+var tenantId = builder.AddParameter("TenantId")
+    .WithDescription("The Azure tenant ID for authentication.");
+var existingOpenAIName = builder.AddParameter("existingOpenAIName")
+    .WithDescription("The name of the existing Azure OpenAI resource.");
+var existingOpenAIResourceGroup = builder.AddParameter("existingOpenAIResourceGroup")
+    .WithDescription("The resource group of the existing Azure OpenAI resource.");
 
 var azureOpenAI = builder.AddAzureOpenAI("azureOpenAI");
         
@@ -29,6 +33,7 @@ var apiService = builder.AddProject<Projects.Aspire_SK_RAG_ApiService>("apiservi
     .WithHttpHealthCheck("/health")
     .WithReference(azureOpenAI)
     .WithReference(conversations)
+    .WithEnvironment("TenantId", tenantId)
     .WaitFor(azureOpenAI)
     .WaitFor(cosmos);
 
